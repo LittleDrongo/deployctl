@@ -1,0 +1,157 @@
+package setup
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/LittleDrongo/deployctl/internal/config"
+)
+
+func put(t *testing.T, root, name, data string) {
+	t.Helper()
+	filename := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func read(t *testing.T, root, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestInitPreservesFilesAndDependency(t *testing.T) {
+	root := t.TempDir()
+	mod := "module example.com/service/v2\n\ngo 1.25.0\nrequire " + Buildcard + " v1.2.3\n"
+	put(t, root, "go.mod", mod)
+	put(t, root, "main.go", "existing source")
+	put(t, root, "Makefile", "existing makefile")
+	put(t, root, ".gitignore", "# existing\r\ncache/")
+	t.Setenv("GOPROXY", "off")
+	o := Options{Root: root, Scaffold: true, Makefile: true}
+	var out bytes.Buffer
+	if err := Run(context.Background(), o, &out); err != nil {
+		t.Fatal(err, out.String())
+	}
+	if _, err := config.Load(filepath.Join(root, config.Filename)); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, root, ".gitignore"); got != "# existing\r\ncache/\r\n/.bin/\r\n" {
+		t.Fatalf("gitignore %q", got)
+	}
+	before := map[string]string{}
+	for _, name := range []string{"go.mod", "main.go", "Makefile", ".gitignore", config.Filename} {
+		before[name] = read(t, root, name)
+	}
+	if err := Run(context.Background(), o, &out); err != nil {
+		t.Fatal(err)
+	}
+	for name, original := range before {
+		if read(t, root, name) != original {
+			t.Fatalf("second init changed %s", name)
+		}
+	}
+	if read(t, root, "go.mod") != mod || read(t, root, "main.go") != "existing source" || read(t, root, "Makefile") != "existing makefile" {
+		t.Fatal("existing files overwritten")
+	}
+}
+
+func TestDryRunAndInvalidExistingConfig(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "go.mod", "module example.com/app\n\ngo 1.25.0\n")
+	t.Setenv("GOPROXY", "off")
+	var out bytes.Buffer
+	if err := Run(context.Background(), Options{Root: root, DryRun: true, Scaffold: true, Makefile: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatal("dry-run wrote files", err)
+	}
+	put(t, root, config.Filename, "version: 999\n")
+	if err := Run(context.Background(), Options{Root: root}, &out); err == nil {
+		t.Fatal("invalid existing config accepted")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatal("mutated files before validation")
+	}
+}
+
+// Supply a local file proxy to exercise real go get without Internet access.
+func localProxy(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	base := "github.com/!little!drongo/buildcard/@v/"
+	mod := "module " + Buildcard + "\n\ngo 1.25.0\n"
+	put(t, root, base+"v1.0.0.mod", mod)
+	put(t, root, base+"v1.0.0.info", `{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}`)
+	put(t, root, base+"list", "v1.0.0\n")
+	var data bytes.Buffer
+	z := zip.NewWriter(&data)
+	for name, contents := range map[string]string{"go.mod": mod, "card.go": "package buildcard\ntype Info struct{}\nfunc Snapshot() Info { return Info{} }\n"} {
+		w, err := z.Create(Buildcard + "@v1.0.0/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	put(t, root, base+"v1.0.0.zip", data.String())
+	proxyPath := filepath.ToSlash(root)
+	if !strings.HasPrefix(proxyPath, "/") {
+		proxyPath = "/" + proxyPath
+	}
+	t.Setenv("GOPROXY", (&url.URL{Scheme: "file", Path: proxyPath}).String())
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOMODCACHE", t.TempDir())
+}
+
+func TestNewProjectAndRetry(t *testing.T) {
+	localProxy(t)
+	dir := filepath.Join(t.TempDir(), "app")
+	var out bytes.Buffer
+	if err := New(context.Background(), dir, "example.com/newapp", false, &out); err != nil {
+		t.Fatal(err, out.String())
+	}
+	if !strings.Contains(read(t, dir, "go.mod"), Buildcard+" v1.0.0") {
+		t.Fatal("dependency is not pinned")
+	}
+	if _, err := config.Load(filepath.Join(dir, config.Filename)); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := goCommand(context.Background(), dir, &out, "run", "."); err != nil {
+		t.Fatal(err, out.String())
+	}
+	if out.Len() != 0 {
+		t.Fatal("scaffold prints output", out.String())
+	}
+	sum := read(t, dir, "go.sum")
+	t.Setenv("GOPROXY", "off")
+	if err := Run(context.Background(), Options{Root: dir, Scaffold: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, dir, "go.sum") != sum {
+		t.Fatal("retry changed dependencies")
+	}
+	if err := New(context.Background(), dir, "", false, &out); err == nil {
+		t.Fatal("existing directory accepted")
+	}
+}

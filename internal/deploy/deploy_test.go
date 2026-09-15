@@ -1,0 +1,198 @@
+package deploy
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/LittleDrongo/deployctl/internal/config"
+)
+
+type fakeTransport struct {
+	calls       []string
+	uploadError bool
+}
+
+func (f *fakeTransport) Shell(_ context.Context, _ config.Target, _ string, phase string) error {
+	f.calls = append(f.calls, phase)
+	return nil
+}
+func (f *fakeTransport) Upload(_ context.Context, _ config.Target, _, _ string) error {
+	f.calls = append(f.calls, "upload")
+	if f.uploadError {
+		return errors.New("upload failed")
+	}
+	return nil
+}
+
+func TestTransportLifecycle(t *testing.T) {
+	target := config.Target{Host: "alias", BuildTarget: "linux-amd64", RemoteDir: "/opt/app", Binary: "app", Container: "app", Image: "app:v1", Base: "alpine:3.20", Mounts: []config.Mount{{HostPath: "/opt/app", ContainerPath: "/app"}}, ReadyTimeout: 120, ReadyInterval: 2, ReadyStable: 5, SSHTimeout: 1200}
+	var out bytes.Buffer
+	transport := &fakeTransport{}
+	if err := Up(context.Background(), transport, target, "prod", "missing-file", true, &out); err != nil || len(transport.calls) != 0 {
+		t.Fatal("dry-run touched transport", err)
+	}
+	file := filepath.Join(t.TempDir(), "binary")
+	if err := os.WriteFile(file, []byte("app binary"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Up(context.Background(), transport, target, "prod", file, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(transport.calls, ",") != "prepare,upload,up,cleanup" {
+		t.Fatal(transport.calls)
+	}
+	transport = &fakeTransport{uploadError: true}
+	if err := Up(context.Background(), transport, target, "prod", file, false, &out); err == nil {
+		t.Fatal("upload failure ignored")
+	}
+	if strings.Join(transport.calls, ",") != "prepare,upload,cleanup" {
+		t.Fatal(transport.calls)
+	}
+}
+
+func TestFailureDiagnosticsBeforeRollback(t *testing.T) {
+	for _, old := range []bool{false, true} {
+		for failure, message := range map[string]string{"dsn": "некорректный DSN database", "panic": "panic: application failed", "loop": "application is restarting", "silent": "Логи приложения отсутствуют", "logfail": "Не удалось получить логи приложения"} {
+			t.Run(fmt.Sprintf("old=%t/%s", old, failure), func(t *testing.T) {
+				dir := t.TempDir()
+				for _, name := range []string{"containers", "service/.stage"} {
+					if err := os.MkdirAll(filepath.Join(dir, name), 0755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				files := map[string]string{"clock": "100\n", "service/.stage/app.new": "new binary"}
+				if old {
+					files["containers/app"] = "old"
+					files["service/app"] = "old binary"
+				}
+				for name, value := range files {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				target := target{Target: config.Target{Container: "app", Binary: "app", RemoteDir: "./service", Image: "app:v1", Base: "alpine:3.20", ReadyTimeout: 20, ReadyInterval: 1, ReadyStable: 3, Mounts: []config.Mount{{HostPath: "./service", ContainerPath: "/app"}}}}
+				script := transactionMock + deployScript(target, "./service/.stage", fmt.Sprintf("%x", sha256.Sum256([]byte("new binary"))), "release")
+				script = strings.ReplaceAll(script, "/tmp/deployctl-lock-", "./locks/")
+				if err := os.WriteFile(filepath.Join(dir, "test.sh"), []byte(script), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(testShell(t), "test.sh")
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), "FAIL="+failure, "RELEASE=previous", "OLD_HEALTH=none")
+				var out bytes.Buffer
+				redactor := newRedactor(&out, target.Target)
+				cmd.Stdout, cmd.Stderr = redactor, redactor
+				err := cmd.Run()
+				if flushErr := redactor.Flush(); flushErr != nil {
+					t.Fatal(flushErr)
+				}
+				if err == nil || !strings.Contains(out.String(), message) || strings.Contains(out.String(), "topsecret") || !strings.Contains(out.String(), "exit=1") {
+					calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+					t.Fatalf("%v: %s\ncalls: %s", err, out.String(), calls)
+				}
+				calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+				logIndex := strings.Index(string(calls), "logs --tail 100 app\n")
+				removeIndex := strings.Index(string(calls), "rm -f app\n")
+				if logIndex < 0 || removeIndex < logIndex {
+					t.Fatalf("logs lost before rollback: %s", calls)
+				}
+				data, err := os.ReadFile(filepath.Join(dir, "service/app"))
+				if old && (err != nil || string(data) != "old binary") {
+					t.Fatal("rollback lost previous binary")
+				}
+				if !old && !os.IsNotExist(err) {
+					t.Fatal("failed first deploy left binary")
+				}
+			})
+		}
+	}
+}
+
+func TestManagementSemanticsAndLocks(t *testing.T) {
+	for _, action := range []string{"stop", "restart", "remove"} {
+		for _, exists := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/exists=%t", action, exists), func(t *testing.T) {
+				dir := t.TempDir()
+				if err := os.Mkdir(filepath.Join(dir, "containers"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				os.WriteFile(filepath.Join(dir, "clock"), []byte("100"), 0644)
+				if exists {
+					os.WriteFile(filepath.Join(dir, "containers/app"), []byte("old"), 0644)
+				}
+				target := target{Target: config.Target{Container: "app", RemoteDir: "./service", ReadyTimeout: 20, ReadyInterval: 1, ReadyStable: 3}}
+				script := strings.ReplaceAll(transactionMock+manageScript(target, action), "/tmp/deployctl-lock-", "./locks/")
+				cmd := exec.Command(testShell(t), "-c", script)
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), "FAIL=", "OLD_HEALTH=healthy")
+				out, err := cmd.CombinedOutput()
+				if (err != nil) != (action == "restart" && !exists) {
+					t.Fatalf("%v %s", err, out)
+				}
+				_, err = os.Stat(filepath.Join(dir, "containers/app"))
+				if (err == nil) != (exists && action != "remove") {
+					t.Fatal("wrong container lifecycle")
+				}
+				calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+				if strings.Contains(string(calls), "create ") || strings.Contains(string(calls), "image ") {
+					t.Fatal("management created container or removed images")
+				}
+			})
+		}
+	}
+	for _, fd := range []string{"8", "9"} {
+		dir := t.TempDir()
+		script := "flock() { [ \"$2\" != " + quote(fd) + " ]; }\ndocker() { echo called > docker-called; }\n" + deployScript(target{Target: config.Target{Container: "app", RemoteDir: "./service"}}, "./service/.stage", "hash", "release")
+		script = strings.ReplaceAll(script, "/tmp/deployctl-lock-", "./locks/")
+		cmd := exec.Command(testShell(t), "-c", script)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "another operation") {
+			t.Fatalf("lock %s ignored: %v %s", fd, err, out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "docker-called")); !os.IsNotExist(err) {
+			t.Fatal("Docker called under busy lock")
+		}
+	}
+}
+
+func TestSSHArgumentsAndRedaction(t *testing.T) {
+	target := config.Target{Host: "production"}
+	for _, scp := range []bool{true, false} {
+		if strings.Contains(strings.Join(sshArgs(target, scp), " "), "-p ") || strings.Contains(strings.Join(sshArgs(target, scp), " "), "-P ") {
+			t.Fatal("overrode SSH port")
+		}
+		if destination(target, scp) != "production" {
+			t.Fatal("lost SSH alias")
+		}
+	}
+	port := 2222
+	target.Port = &port
+	target.User = "deploy"
+	if !strings.Contains(strings.Join(sshArgs(target, true), " "), "-P 2222") || destination(target, false) != "deploy@production" {
+		t.Fatal("explicit SSH settings lost")
+	}
+	var out bytes.Buffer
+	r := newRedactor(&out, config.Target{StartArgs: config.Arguments{{Key: "--key", Value: "private-value"}}})
+	for _, part := range []string{"error private-", "value postgres://user:secret@host/db password=hidden\n", strings.Repeat("x", 64*1024), "secret\n", "panic: normal message"} {
+		if _, err := r.Write([]byte(part)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.Flush()
+	for _, secret := range []string{"private-value", "user:secret", "hidden", "secret"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("leaked %s: %s", secret, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "panic: normal message") || !strings.Contains(out.String(), "oversized") {
+		t.Fatal(out.String())
+	}
+}
