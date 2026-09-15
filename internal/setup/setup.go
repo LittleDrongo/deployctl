@@ -211,37 +211,6 @@ func Run(ctx context.Context, o Options, out io.Writer) error {
 	return err
 }
 
-// New creates a fresh directory; on failure it is retained for inspection/retry.
-func New(ctx context.Context, dir, module string, dry bool, out io.Writer) error {
-	if _, err := os.Lstat(dir); err == nil {
-		return fmt.Errorf("directory already exists: %s", dir)
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if module == "" {
-		module = filepath.Base(dir)
-	}
-	if strings.ContainsAny(module, " \t\r\n\x00") || strings.HasPrefix(module, "-") {
-		return fmt.Errorf("invalid module path %q", module)
-	}
-	if dry {
-		_, err := fmt.Fprintf(out, "Создать каталог %s; go mod init %s; init --scaffold с %s@%s. Файлы не изменены.\n", dir, module, Buildcard, BuildcardVersion)
-		return err
-	}
-	if err := os.Mkdir(dir, 0755); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	if err := goCommand(ctx, dir, out, "mod", "init", module); err != nil {
-		return fmt.Errorf("project retained at %s: %w", dir, err)
-	}
-	if err := Run(ctx, Options{Root: dir, Scaffold: true}, out); err != nil {
-		return fmt.Errorf("project retained at %s; retry deployctl init --root %s --scaffold: %w", dir, dir, err)
-	}
-	return nil
-}
-
 var major = regexp.MustCompile(`^v([2-9]|[1-9][0-9]+)$`)
 
 func template(module string) string {
@@ -271,7 +240,7 @@ defaults:
   binary_name: %[1]s
   docker_container: %[1]s
   docker_image: %[1]s:latest
-  docker_base_image: debian:bookworm-slim
+  docker_base_image: alpine:3.20
   docker_run_args: []
   docker_mounts:
     - host_path: /opt/%[1]s

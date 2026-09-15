@@ -185,6 +185,9 @@ func TestDeploymentTransaction(t *testing.T) {
 			if tc.fail == "rollback" && read("service/.stage/previous") != "old binary" {
 				t.Fatal("lost recovery backup")
 			}
+			if tc.fail == "build" && (!strings.Contains(string(out), "docker save -o deployctl-base-image.tar alpine:3.20") || !strings.Contains(string(out), "docker load -i deployctl-base-image.tar")) {
+				t.Fatalf("missing offline base-image instructions: %s", out)
+			}
 			if tc.fail == "start" && tc.old && read("started") != "old" {
 				t.Fatalf("old container was not restarted: %s", out)
 			}

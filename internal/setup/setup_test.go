@@ -49,6 +49,9 @@ func TestInitPreservesFilesAndDependency(t *testing.T) {
 	if _, err := config.Load(filepath.Join(root, config.Filename)); err != nil {
 		t.Fatal(err)
 	}
+	if generated := read(t, root, config.Filename); !strings.Contains(generated, "docker_base_image: alpine:3.20") || strings.Contains(generated, "debian:bookworm-slim") {
+		t.Fatalf("unexpected default base image:\n%s", generated)
+	}
 	if got := read(t, root, ".gitignore"); got != "# existing\r\ncache/\r\n/.bin/\r\n" {
 		t.Fatalf("gitignore %q", got)
 	}
@@ -123,11 +126,15 @@ func localProxy(t *testing.T) {
 	t.Setenv("GOMODCACHE", t.TempDir())
 }
 
-func TestNewProjectAndRetry(t *testing.T) {
+func TestInitWithDependencyAndRetry(t *testing.T) {
 	localProxy(t)
 	dir := filepath.Join(t.TempDir(), "app")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	put(t, dir, "go.mod", "module example.com/newapp\n\ngo 1.25.0\n")
 	var out bytes.Buffer
-	if err := New(context.Background(), dir, "example.com/newapp", false, &out); err != nil {
+	if err := Run(context.Background(), Options{Root: dir, Scaffold: true}, &out); err != nil {
 		t.Fatal(err, out.String())
 	}
 	if !strings.Contains(read(t, dir, "go.mod"), Buildcard+" v1.0.0") {
@@ -150,8 +157,5 @@ func TestNewProjectAndRetry(t *testing.T) {
 	}
 	if read(t, dir, "go.sum") != sum {
 		t.Fatal("retry changed dependencies")
-	}
-	if err := New(context.Background(), dir, "", false, &out); err == nil {
-		t.Fatal("existing directory accepted")
 	}
 }

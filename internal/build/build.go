@@ -24,12 +24,14 @@ const BuildcardPath = "github.com/LittleDrongo/buildcard"
 
 type Options struct {
 	Root, Platform, Package, Tag string
+	DeployctlVersion             string
 	DryRun                       bool
 	Timeout                      time.Duration
 }
 
 type Result struct {
 	Artifact     string
+	Manifest     string
 	Version      string
 	ImageVersion string
 }
@@ -145,6 +147,7 @@ func Run(ctx context.Context, o Options, out io.Writer) (result Result, err erro
 		name += ".exe"
 	}
 	result = Result{Artifact: filepath.Join(o.Root, ".bin", name), Version: metadata.Version}
+	result.Manifest = ManifestPath(result.Artifact)
 	result.ImageVersion = metadata.Version
 	if metadata.Tag == "" {
 		result.ImageVersion = "dev"
@@ -210,7 +213,8 @@ func Run(ctx context.Context, o Options, out io.Writer) (result Result, err erro
 			return result, err
 		}
 	}
-	flags, err := linkerFlags(targets, metadata, module, time.Now().UTC())
+	builtAt := time.Now().UTC()
+	flags, err := linkerFlags(targets, metadata, module, builtAt)
 	if err != nil {
 		return result, err
 	}
@@ -237,10 +241,33 @@ func Run(ctx context.Context, o Options, out io.Writer) (result Result, err erro
 		}
 		return result, fmt.Errorf("build %s: %w", o.Platform, err)
 	}
+	hash, err := fileSHA256(tempPath)
+	if err != nil {
+		return result, fmt.Errorf("hash artifact: %w", err)
+	}
+	goVersionData, err := command(ctx, source, env, "go", "env", "GOVERSION").Output()
+	if err != nil {
+		return result, fmt.Errorf("read Go version: %w", err)
+	}
+	toolVersion := o.DeployctlVersion
+	if toolVersion == "" {
+		toolVersion = "dev"
+	}
+	manifest := Manifest{
+		Schema: manifestSchema, Artifact: filepath.Base(result.Artifact), SHA256: hash,
+		Version: result.Version, ImageVersion: result.ImageVersion,
+		Commit: metadata.Commit, CommitShort: metadata.Short, CommitDate: metadata.CommitDate, Dirty: metadata.Dirty,
+		Repository: module, Platform: o.Platform, Package: o.Package, GoVersion: strings.TrimSpace(string(goVersionData)),
+		DeployctlVersion: toolVersion, BuiltAt: builtAt.Format(time.RFC3339),
+	}
 	if err = os.Rename(tempPath, result.Artifact); err != nil {
 		return result, fmt.Errorf("publish artifact: %w", err)
 	}
-	_, err = fmt.Fprintf(out, "Готово: %s\n", result.Artifact)
+	if err = writeManifest(result.Manifest, manifest); err != nil {
+		_ = os.Remove(result.Manifest)
+		return result, fmt.Errorf("publish artifact manifest: %w", err)
+	}
+	_, err = fmt.Fprintf(out, "Готово: %s\nМанифест: %s\nSHA-256: %s\n", result.Artifact, result.Manifest, hash)
 	return result, err
 }
 

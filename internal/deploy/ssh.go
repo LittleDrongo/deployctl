@@ -15,6 +15,16 @@ import (
 // OpenSSH uses the system clients and their normal per-user SSH configuration.
 type OpenSSH struct{ Out io.Writer }
 
+// CheckLocalClients verifies the two system clients used by remote operations.
+func CheckLocalClients() error {
+	for _, name := range []string{"ssh", "scp"} {
+		if _, err := exec.LookPath(name); err != nil {
+			return fmt.Errorf("required OpenSSH client %q is not available in PATH: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func sshArgs(t config.Target, scp bool) []string {
 	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
 	if t.Port != nil {
@@ -39,8 +49,11 @@ func destination(t config.Target, scp bool) string {
 }
 
 func (s OpenSSH) run(ctx context.Context, t config.Target, duration time.Duration, input io.Reader, name string, args ...string) error {
-	ctx, cancel := context.WithTimeout(ctx, duration)
-	defer cancel()
+	if duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, duration)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdin = input
@@ -55,6 +68,16 @@ func (s OpenSSH) run(ctx context.Context, t config.Target, duration time.Duratio
 		return fmt.Errorf("%s: %w (diagnostics above)", name, err)
 	}
 	return flushErr
+}
+
+// Stream runs a remote shell until the caller cancels the context. It is used
+// for commands such as logs --follow which intentionally have no fixed timeout.
+func (s OpenSSH) Stream(ctx context.Context, t config.Target, script, phase string) error {
+	if _, err := fmt.Fprintf(s.Out, "remote : %s — %s\n", t.Host, phase); err != nil {
+		return err
+	}
+	args := append(sshArgs(t, false), destination(t, false), "exec sh -s")
+	return s.run(ctx, t, 0, strings.NewReader(script), "ssh", args...)
 }
 
 func (s OpenSSH) Shell(ctx context.Context, t config.Target, script, phase string) error {

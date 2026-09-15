@@ -95,7 +95,7 @@ targets:
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", "")
-	for _, action := range []string{"up", "stop", "restart", "remove"} {
+	for _, action := range []string{"up", "doctor", "status", "logs", "stop", "restart", "remove"} {
 		var out bytes.Buffer
 		if err := Run(context.Background(), []string{action, "prod", "--root", root, "--dry-run"}, &out, "dev"); err != nil {
 			t.Fatal(action, err)

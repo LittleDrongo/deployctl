@@ -23,13 +23,19 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 	filename := f.String("config", "", "config path relative to module root")
 	dry := f.Bool("dry-run", false, "print plan without building or connecting")
 	var tag, pkg string
-	var keep bool
+	var keep, follow bool
+	tail := 100
 	timeout := 20 * time.Minute
 	if action == "up" {
 		f.StringVar(&tag, "tag", "", "local tag to build in a separate checkout")
 		f.StringVar(&pkg, "package", "", "main package override")
 		f.DurationVar(&timeout, "timeout", timeout, "build timeout")
 		f.BoolVar(&keep, "keep-artifact", false, "retain local binary after successful deployment")
+	}
+	if action == "logs" {
+		f.IntVar(&tail, "tail", tail, "number of recent log lines")
+		f.BoolVar(&follow, "f", false, "follow new log output until interrupted")
+		f.BoolVar(&follow, "follow", false, "follow new log output until interrupted")
 	}
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		args = append(append([]string{}, args[1:]...), args[0])
@@ -60,6 +66,20 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 		return fmt.Errorf("unknown target %q; configure targets in %s", f.Arg(0), config.Path(dir, *filename))
 	}
 	transport := deploy.OpenSSH{Out: out}
+	if action == "doctor" {
+		if !*dry {
+			if err := deploy.CheckLocalClients(); err != nil {
+				return err
+			}
+		}
+		return deploy.Doctor(ctx, transport, t, f.Arg(0), *dry, out)
+	}
+	if action == "status" {
+		return deploy.Status(ctx, transport, t, f.Arg(0), *dry, out)
+	}
+	if action == "logs" {
+		return deploy.Logs(ctx, transport, t, f.Arg(0), tail, follow, *dry, out)
+	}
 	if action != "up" {
 		return deploy.Manage(ctx, transport, t, action, *dry, out)
 	}

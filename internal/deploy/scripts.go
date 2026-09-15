@@ -90,7 +90,7 @@ func runtimeScript(t target) string {
 	}
 	b.WriteString("phase=image\n" + progress("Подготовка образа "+t.Image))
 	// WORKDIR consumes the rest of the line; paths cannot contain newlines.
-	fmt.Fprintf(&b, "docker build --label %s -t %s - > /dev/null <<'DEPLOY_DOCKERFILE'\nFROM %s\nWORKDIR %s\nDEPLOY_DOCKERFILE\n", quote("deployctl.repository="+imageRepository(t.Image)), quote(t.Image), t.Base, path.Dir(t.executable()))
+	fmt.Fprintf(&b, "if ! docker build --label %s -t %s - > /dev/null <<'DEPLOY_DOCKERFILE'\nFROM %s\nWORKDIR %s\nDEPLOY_DOCKERFILE\nthen\n%s exit 1\nfi\n", quote("deployctl.repository="+imageRepository(t.Image)), quote(t.Image), t.Base, path.Dir(t.executable()), baseImageHelp(t.Base))
 	return b.String()
 }
 

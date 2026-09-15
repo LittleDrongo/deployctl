@@ -9,53 +9,45 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/LittleDrongo/deployctl/internal/build"
+	"github.com/LittleDrongo/deployctl/internal/clean"
 	"github.com/LittleDrongo/deployctl/internal/config"
 	"github.com/LittleDrongo/deployctl/internal/gitmeta"
 	"github.com/LittleDrongo/deployctl/internal/project"
+	"github.com/LittleDrongo/deployctl/internal/release"
 	"github.com/LittleDrongo/deployctl/internal/setup"
 )
 
-const helpFormat = `deployctl — сборка и развёртывание Go-приложений
-
-Доступные команды:
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-  %-28s  %s
-
-Корень приложения — ближайший go.mod вверх от текущего каталога.
---root задаёт каталог модуля явно, относительно текущего каталога.
-Вложенные модули выбираются независимо; go.work не задаёт корень.
-Параметры команд: deployctl build --help, deployctl up --help.
-`
-
 func writeHelp(out io.Writer) error {
-	_, err := fmt.Fprintf(out, helpFormat,
-		"version", "Версия утилиты",
-		"info [--root DIR] [--json]", "Версия приложения из Git",
-		"build [options]", "Собрать приложение",
-		"init [options]", "Подготовить существующий модуль",
-		"new <name> [options]", "Создать приложение",
-		"config check [options]", "Проверить deploy.yaml",
-		"up <target> [options]", "Собрать и развернуть",
-		"stop <target> [options]", "Остановить контейнер",
-		"restart <target> [options]", "Перезапустить существующий",
-		"remove <target> [options]", "Остановить и удалить контейнер",
-		"help", "Справка",
-	)
+	if _, err := fmt.Fprintln(out, "deployctl — сборка и развёртывание Go-приложений\n\nДоступные команды:"); err != nil {
+		return err
+	}
+	commands := [][2]string{
+		{"version", "Версия утилиты"},
+		{"info [--root DIR] [--json]", "Версия приложения из Git"},
+		{"build [options]", "Собрать приложение"},
+		{"init [options]", "Подготовить существующий модуль"},
+		{"config check [options]", "Проверить deploy.yaml"},
+		{"doctor <target> [options]", "Проверить окружение сервера"},
+		{"status <target> [options]", "Показать состояние контейнера"},
+		{"logs <target> [options]", "Показать логи контейнера"},
+		{"up <target> [options]", "Собрать и развернуть"},
+		{"stop <target> [options]", "Остановить контейнер"},
+		{"restart <target> [options]", "Перезапустить существующий"},
+		{"remove <target> [options]", "Остановить и удалить контейнер"},
+		{"release [options]", "Создать и отправить релизный тег"},
+		{"clean [options]", "Удалить локальные артефакты"},
+		{"help", "Справка"},
+	}
+	for _, command := range commands {
+		if _, err := fmt.Fprintf(out, "  %-28s  %s\n", command[0], command[1]); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprint(out, "\nКорень приложения — ближайший go.mod вверх от текущего каталога.\n--root задаёт каталог модуля явно, относительно текущего каталога.\nВложенные модули выбираются независимо; go.work не задаёт корень.\nПараметры команд: deployctl build --help, deployctl up --help, deployctl logs --help.\n")
 	return err
 }
 
@@ -81,18 +73,70 @@ func Run(ctx context.Context, args []string, out io.Writer, version string) erro
 		return runBuild(ctx, args[1:], out)
 	case "init":
 		return runInit(ctx, args[1:], out)
-	case "new":
-		return runNew(ctx, args[1:], out)
 	case "config":
 		if len(args) < 2 || args[1] != "check" {
 			return fmt.Errorf("usage: deployctl config check [--root DIR] [--config FILE]")
 		}
 		return checkConfig(args[2:], out)
-	case "up", "stop", "restart", "remove":
+	case "up", "doctor", "status", "logs", "stop", "restart", "remove":
 		return runRemote(ctx, args[0], args[1:], out)
+	case "release":
+		return runRelease(ctx, args[1:], out)
+	case "clean":
+		return runClean(args[1:], out)
 	default:
 		return fmt.Errorf("unknown command %q; use deployctl help", args[0])
 	}
+}
+
+func runClean(args []string, out io.Writer) error {
+	f := flag.NewFlagSet("clean", flag.ContinueOnError)
+	f.SetOutput(out)
+	root := f.String("root", "", "application module directory")
+	dry := f.Bool("dry-run", false, "show the artifact directory without removing it")
+	if err := f.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if f.NArg() != 0 {
+		return fmt.Errorf("clean does not accept positional arguments")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	dir, err := project.Root(cwd, *root)
+	if err != nil {
+		return err
+	}
+	return clean.Run(clean.Options{Root: dir, DryRun: *dry}, out)
+}
+
+func runRelease(ctx context.Context, args []string, out io.Writer) error {
+	f := flag.NewFlagSet("release", flag.ContinueOnError)
+	f.SetOutput(out)
+	root := f.String("root", "", "application module directory")
+	dry := f.Bool("dry-run", false, "show the next tag without creating or pushing it")
+	if err := f.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if f.NArg() != 0 {
+		return fmt.Errorf("release does not accept positional arguments")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	dir, err := project.Root(cwd, *root)
+	if err != nil {
+		return err
+	}
+	return release.Run(ctx, release.Options{Root: dir, DryRun: *dry}, out)
 }
 
 func runBuild(ctx context.Context, args []string, out io.Writer) error {
@@ -168,31 +212,6 @@ func runInit(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	return setup.Run(ctx, o, out)
-}
-
-func runNew(ctx context.Context, args []string, out io.Writer) error {
-	f := flag.NewFlagSet("new", flag.ContinueOnError)
-	f.SetOutput(out)
-	module := f.String("module", "", "Go module path (default directory name)")
-	dry := f.Bool("dry-run", false, "preview without creating files")
-	// Accept both new NAME --module PATH and new --module PATH NAME.
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		args = append(append([]string{}, args[1:]...), args[0])
-	}
-	if err := f.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return err
-	}
-	if f.NArg() != 1 {
-		return fmt.Errorf("usage: deployctl new NAME [--module MODULE]")
-	}
-	dir, err := filepath.Abs(f.Arg(0))
-	if err != nil {
-		return err
-	}
-	return setup.New(ctx, dir, *module, *dry, out)
 }
 
 func checkConfig(args []string, out io.Writer) error {

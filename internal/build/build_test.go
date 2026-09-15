@@ -172,6 +172,34 @@ func TestLegacyAndMissingMetadata(t *testing.T) {
 	}
 }
 
+func TestTaggedLegacyBuildinfo(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/legacy\n\ngo 1.25.0\n")
+	write(t, root, "internal/buildinfo/info.go", "package buildinfo\nvar buildVersion string\nfunc Version() string { return buildVersion }\n")
+	write(t, root, "main.go", "package main\nimport (\"fmt\"; \"example.com/legacy/internal/buildinfo\")\nfunc main() { fmt.Print(buildinfo.Version()) }\n")
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		if data, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, data)
+		}
+	}
+	git("init")
+	git("config", "user.name", "Test")
+	git("config", "user.email", "test@example.com")
+	git("add", ".")
+	git("commit", "-m", "legacy release")
+	git("tag", "v0.9.0")
+	write(t, root, "main.go", "package main\nfunc main() {}\n")
+
+	result := run(t, root, "v0.9.0")
+	data, err := exec.Command(result.Artifact).Output()
+	if err != nil || string(data) != "v0.9.0" {
+		t.Fatalf("tagged legacy buildinfo: %s %v", data, err)
+	}
+}
+
 func TestEnvironmentOverridesCaseInsensitively(t *testing.T) {
 	t.Setenv("GOOS", "invalid")
 	t.Setenv("GOARCH", "invalid")
