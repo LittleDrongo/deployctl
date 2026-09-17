@@ -3,7 +3,7 @@ package deploy
 import "strings"
 
 func imageRepository(image string) string {
-	repository := strings.SplitN(image, "@", 2)[0]
+	repository, _, _ := strings.Cut(image, "@")
 	if colon := strings.LastIndex(repository, ":"); colon > strings.LastIndex(repository, "/") {
 		repository = repository[:colon]
 	}

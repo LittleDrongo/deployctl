@@ -15,7 +15,11 @@ var version = "dev"
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := cli.Run(ctx, os.Args[1:], os.Stdout, version); err != nil {
+	var args []string
+	if len(os.Args) > 1 {
+		args = os.Args[1:]
+	}
+	if err := cli.Run(ctx, args, os.Stdout, version); err != nil {
 		fmt.Fprintln(os.Stderr, "deployctl:", err)
 		os.Exit(1)
 	}

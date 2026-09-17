@@ -56,16 +56,21 @@ func run(t *testing.T, root string, args ...string) Result {
 	return result
 }
 
-func values(t *testing.T, artifact string) []string {
+func values(t *testing.T, artifact string) [7]string {
 	t.Helper()
 	data, err := exec.Command(artifact).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
-	if err := json.Unmarshal(data, &got); err != nil {
+	var decoded []string
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("%s: %v", data, err)
 	}
+	if len(decoded) != 7 {
+		t.Fatalf("expected 7 metadata fields, got %d: %s", len(decoded), data)
+	}
+	var got [7]string
+	copy(got[:], decoded)
 	return got
 }
 
