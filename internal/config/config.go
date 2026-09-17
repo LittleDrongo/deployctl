@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const Filename = "service.yaml"
+const Filename = "config_deploy.yaml"
 const LegacyFilename = "deploy.yaml"
 
 type Build struct {

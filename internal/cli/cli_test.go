@@ -133,7 +133,7 @@ targets:
   dev:
     host: development
 `
-	if err := os.WriteFile(filepath.Join(root, "service.yaml"), []byte(config), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "config_deploy.yaml"), []byte(config), 0644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", "")

@@ -31,7 +31,7 @@ func writeHelp(out io.Writer) error {
 		{"info [--root DIR] [--json]", "Версия приложения из Git"},
 		{"build [options]", "Собрать приложение"},
 		{"init [options]", "Подготовить существующий модуль"},
-		{"config check [options]", "Проверить service.yaml"},
+		{"config check [options]", "Проверить config_deploy.yaml"},
 		{"doctor <target> [options]", "Проверить окружение сервера"},
 		{"status [target] [options]", "Показать состояние одного или всех контейнеров"},
 		{"logs <target> [options]", "Показать логи контейнера"},
@@ -149,7 +149,7 @@ func runBuild(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("build", flag.ContinueOnError)
 	flags.SetOutput(out)
 	var o build.Options
-	filename := flags.String("config", "", "config path relative to module root (default service.yaml; fallback deploy.yaml)")
+	filename := flags.String("config", "", "config path relative to module root (default config_deploy.yaml; fallback deploy.yaml)")
 	flags.StringVar(&o.Root, "root", "", "application module directory")
 	flags.StringVar(&o.Platform, "platform", runtime.GOOS+"-"+runtime.GOARCH, "build only this OS-ARCH, overriding configured platforms")
 	flags.StringVar(&o.Package, "package", ".", "main package relative to module root")

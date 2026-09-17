@@ -11,7 +11,7 @@ go install github.com/LittleDrongo/deployctl@latest
 deployctl init
 ```
 
-`init` создаёт `service.yaml`, добавляет `/.bin/` в `.gitignore` и подключает `buildcard`. В новом конфиге перечислены девять платформ: удалите или закомментируйте ненужные. Заполните `targets` для своих серверов; схема и пример — в [doc/CONFIG.md](doc/CONFIG.md). Если используется старый `deploy.yaml`, он продолжит работать, пока рядом нет `service.yaml`.
+`init` создаёт `config_deploy.yaml`, добавляет `/.bin/` в `.gitignore` и подключает `buildcard`. В новом конфиге перечислены девять платформ: удалите или закомментируйте ненужные. Заполните `targets` для своих серверов; схема и пример — в [doc/CONFIG.md](doc/CONFIG.md). Если используется старый `deploy.yaml`, он продолжит работать, пока рядом нет `config_deploy.yaml`.
 
 ```bash
 deployctl config check
