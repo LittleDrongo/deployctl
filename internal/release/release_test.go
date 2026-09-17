@@ -157,3 +157,43 @@ func gitOutside(t *testing.T, args ...string) string {
 	}
 	return strings.TrimSpace(string(data))
 }
+
+func TestRunWithoutOrigin(t *testing.T) {
+	for _, otherRemote := range []bool{false, true} {
+		t.Run(fmt.Sprintf("otherRemote=%v", otherRemote), func(t *testing.T) {
+			dir := t.TempDir()
+			git := func(args ...string) string { return gitIn(t, dir, args...) }
+			git("init")
+			git("config", "user.email", "test@example.invalid")
+			git("config", "user.name", "Test")
+			git("commit", "--allow-empty", "-m", "initial")
+			if otherRemote {
+				git("remote", "add", "upstream", filepath.Join(t.TempDir(), "missing.git"))
+			}
+			var out bytes.Buffer
+			if err := Run(context.Background(), Options{Root: dir, DryRun: true}, &out); err != nil {
+				t.Fatal(err)
+			}
+			if git("tag", "--list") != "" || !strings.Contains(out.String(), "origin отсутствует") {
+				t.Fatalf("invalid dry-run: %s", out.String())
+			}
+			out.Reset()
+			if err := Run(context.Background(), Options{Root: dir}, &out); err != nil {
+				t.Fatal(err)
+			}
+			if git("rev-parse", "refs/tags/v1.0.0") != git("rev-parse", "HEAD") || !strings.Contains(out.String(), "отправка пропущена") {
+				t.Fatalf("missing local release: %s", out.String())
+			}
+			if err := Run(context.Background(), Options{Root: dir}, io.Discard); err == nil || !strings.Contains(err.Error(), "already has release tag") {
+				t.Fatalf("duplicate release accepted: %v", err)
+			}
+			git("commit", "--allow-empty", "-m", "next")
+			if err := Run(context.Background(), Options{Root: dir}, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			if got := git("tag", "--points-at", "HEAD"); got != "v1.0.1" {
+				t.Fatalf("next local release = %q", got)
+			}
+		})
+	}
+}

@@ -14,11 +14,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const Filename = "deploy.yaml"
+const Filename = "service.yaml"
+const LegacyFilename = "deploy.yaml"
 
 type Build struct {
-	Package  string `yaml:"package"`
-	Platform string `yaml:"platform"`
+	Package   string   `yaml:"package"`
+	Platform  string   `yaml:"platform"`
+	Platforms []string `yaml:"platforms"`
 }
 
 type Mount struct {
@@ -49,6 +51,7 @@ func (a *Arguments) UnmarshalYAML(n *yaml.Node) error {
 
 // Port remains nil when omitted, allowing OpenSSH to resolve it from ssh_config.
 type Target struct {
+	ContainerUser string    `yaml:"container_user"`
 	Host          string    `yaml:"host"`
 	User          string    `yaml:"user"`
 	Port          *int      `yaml:"port"`
@@ -77,6 +80,12 @@ type Config struct {
 func Path(root, filename string) string {
 	if filename == "" {
 		filename = Filename
+		// Prefer the new name, but keep existing projects working unchanged.
+		if _, err := os.Lstat(filepath.Join(root, Filename)); os.IsNotExist(err) {
+			if _, legacyErr := os.Lstat(filepath.Join(root, LegacyFilename)); !os.IsNotExist(legacyErr) {
+				filename = LegacyFilename
+			}
+		}
 	}
 	if filepath.IsAbs(filename) {
 		return filepath.Clean(filename)
@@ -159,6 +168,19 @@ func Parse(data []byte) (Config, error) {
 	if raw.Build.Platform != "" && !platform.MatchString(raw.Build.Platform) {
 		return c, fmt.Errorf("build.platform must be OS-ARCH")
 	}
+	if raw.Build.Platform != "" && len(raw.Build.Platforms) > 0 {
+		return c, fmt.Errorf("use either build.platform or build.platforms, not both")
+	}
+	seenPlatforms := map[string]bool{}
+	for _, value := range raw.Build.Platforms {
+		if !platform.MatchString(value) {
+			return c, fmt.Errorf("build.platforms entry %q must be OS-ARCH", value)
+		}
+		if seenPlatforms[value] {
+			return c, fmt.Errorf("duplicate build.platforms entry %q", value)
+		}
+		seenPlatforms[value] = true
+	}
 	c.Version, c.Build, c.Targets = raw.Version, raw.Build, make(map[string]Target)
 	// Check defaults even if no targets have been configured yet.
 	base := Target{ReadyTimeout: 120, ReadyInterval: 2, ReadyStable: 5, SSHTimeout: 1200}
@@ -218,6 +240,9 @@ func remotePath(p string) bool {
 }
 
 func validate(t Target, complete bool) error {
+	if t.ContainerUser != "" && t.ContainerUser != "ssh" && t.ContainerUser != "image" {
+		return fmt.Errorf("container_user must be ssh or image")
+	}
 	if complete && (t.Host == "" || t.RemoteDir == "" || t.BuildTarget == "" || t.Binary == "" || t.Container == "" || t.Image == "" || t.Base == "") {
 		return fmt.Errorf("host, remote_dir, build_target, binary_name, docker_container, docker_image and docker_base_image are required after defaults")
 	}

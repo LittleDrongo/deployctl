@@ -196,3 +196,47 @@ func TestSSHArgumentsAndRedaction(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+func TestContainerUserSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, policy string
+		args         []string
+		want         string
+	}{
+		{"default", "", nil, "--user 1234:5678"},
+		{"ssh", "ssh", nil, "--user 1234:5678"},
+		{"image", "image", nil, ""},
+		{"explicit", "", []string{"--user", "42:43"}, "--user 42:43"},
+		{"short", "", []string{"-u", "42:43"}, "-u 42:43"},
+		{"equals", "", []string{"--user=42:43"}, "--user=42:43"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := target{Target: config.Target{ContainerUser: tc.policy, RunArgs: tc.args, Container: "app", RemoteDir: "/srv/app", Binary: "app", Image: "app:v1", Mounts: []config.Mount{{HostPath: "/srv/app", ContainerPath: "/app"}}}}
+			script := `set -eu
+id() { case $1 in -u) echo 1234 ;; -g) echo 5678 ;; esac; }
+docker() { printf '%s ' "$@" > args; }
+` + createContainer(target, "app", "release", "hash")
+			cmd := exec.Command(testShell(t), "-c", script)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "args"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(data)
+			if tc.want == "" {
+				if strings.Contains(got, "--user") || strings.Contains(got, "-u ") {
+					t.Fatal(got)
+				}
+			} else if !strings.Contains(got, tc.want) {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			if tc.name == "explicit" && strings.Contains(got, "1234") {
+				t.Fatal("overrode explicit user")
+			}
+		})
+	}
+}

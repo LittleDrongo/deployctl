@@ -90,6 +90,11 @@ func Up(ctx context.Context, transport Transport, t config.Target, name, artifac
 	if err != nil {
 		return err
 	}
+	// Resolve the default policy before hashing, so existing root containers
+	// are redeployed after upgrading to the SSH-user default.
+	if t.ContainerUser == "" {
+		t.ContainerUser = "ssh"
+	}
 	hash := hex.EncodeToString(h.Sum(nil))
 	raw, err := json.Marshal(t)
 	if err != nil {

@@ -159,3 +159,52 @@ func TestInitWithDependencyAndRetry(t *testing.T) {
 		t.Fatal("retry changed dependencies")
 	}
 }
+
+func TestInitIncludesAllBuildPlatforms(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "go.mod", "module example.com/app\n\ngo 1.25.0\nrequire "+Buildcard+" v1.0.0\n")
+	t.Setenv("GOPROXY", "off")
+	var out bytes.Buffer
+	if err := Run(context.Background(), Options{Root: root}, &out); err != nil {
+		t.Fatal(err)
+	}
+	c, err := config.Load(filepath.Join(root, config.Filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "windows-amd64,windows-arm64,linux-amd64,linux-arm64,android-arm64,windows-386,linux-386,darwin-amd64,darwin-arm64"
+	if got := strings.Join(c.Build.Platforms, ","); got != want {
+		t.Fatalf("platforms = %s; want %s", got, want)
+	}
+}
+
+func TestInitConfigNameAndInstallHeader(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new", true: "legacy"}[legacy], func(t *testing.T) {
+			root := t.TempDir()
+			put(t, root, "go.mod", "module example.com/app\n\ngo 1.25.0\nrequire "+Buildcard+" v1.0.0\n")
+			t.Setenv("GOPROXY", "off")
+			old := "version: 1\nbuild:\n  platform: linux-arm64\ntargets: {}\n"
+			if legacy {
+				put(t, root, config.LegacyFilename, old)
+			}
+			var out bytes.Buffer
+			if err := Run(context.Background(), Options{Root: root}, &out); err != nil {
+				t.Fatal(err)
+			}
+			if legacy {
+				if read(t, root, config.LegacyFilename) != old {
+					t.Fatal("legacy config changed")
+				}
+				if _, err := os.Stat(filepath.Join(root, config.Filename)); !os.IsNotExist(err) {
+					t.Fatal("second config created")
+				}
+			} else {
+				first, _, _ := strings.Cut(read(t, root, config.Filename), "\n")
+				if first != "# Install: go install github.com/LittleDrongo/deployctl@latest" {
+					t.Fatal(first)
+				}
+			}
+		})
+	}
+}

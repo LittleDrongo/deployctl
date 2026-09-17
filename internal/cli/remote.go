@@ -46,7 +46,10 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 		}
 		return err
 	}
-	if f.NArg() != 1 {
+	if (action == "status" && f.NArg() > 1) || (action != "status" && f.NArg() != 1) {
+		if action == "status" {
+			return fmt.Errorf("usage: deployctl status [TARGET] [options]")
+		}
 		return fmt.Errorf("usage: deployctl %s TARGET [options]", action)
 	}
 	cwd, err := os.Getwd()
@@ -61,11 +64,21 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 	if err != nil {
 		return err
 	}
+	transport := deploy.OpenSSH{Out: out}
+	if action == "status" {
+		if f.NArg() == 0 {
+			return deploy.Statuses(ctx, transport, c.Targets, *dry, out)
+		}
+		t, ok := c.Targets[f.Arg(0)]
+		if !ok {
+			return fmt.Errorf("unknown target %q; configure targets in %s", f.Arg(0), config.Path(dir, *filename))
+		}
+		return deploy.Status(ctx, transport, t, f.Arg(0), *dry, out)
+	}
 	t, ok := c.Targets[f.Arg(0)]
 	if !ok {
 		return fmt.Errorf("unknown target %q; configure targets in %s", f.Arg(0), config.Path(dir, *filename))
 	}
-	transport := deploy.OpenSSH{Out: out}
 	if action == "doctor" {
 		if !*dry {
 			if err := deploy.CheckLocalClients(); err != nil {
@@ -73,9 +86,6 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 			}
 		}
 		return deploy.Doctor(ctx, transport, t, f.Arg(0), *dry, out)
-	}
-	if action == "status" {
-		return deploy.Status(ctx, transport, t, f.Arg(0), *dry, out)
 	}
 	if action == "logs" {
 		return deploy.Logs(ctx, transport, t, f.Arg(0), tail, follow, *dry, out)

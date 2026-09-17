@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,6 +53,7 @@ func TestInheritanceAndSSHConfig(t *testing.T) {
 
 func TestInvalidConfig(t *testing.T) {
 	cases := map[string]string{
+		"container user":             strings.Replace(valid, "binary_name: service", "container_user: invalid\n  binary_name: service", 1),
 		"reserved name":              strings.Replace(valid, "docker_run_args: [--network=host]", "docker_run_args: [--name=other]", 1),
 		"auto remove":                strings.Replace(valid, "docker_run_args: [--network=host]", "docker_run_args: [--rm]", 1),
 		"reserved label":             strings.Replace(valid, "docker_run_args: [--network=host]", "docker_run_args: [--label=deployctl.release=other]", 1),
@@ -79,5 +82,65 @@ func TestInvalidConfig(t *testing.T) {
 				t.Fatal("invalid config accepted")
 			}
 		})
+	}
+}
+
+func TestBuildPlatforms(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		want         int
+		invalid      bool
+	}{
+		{"list", "platforms: [linux-amd64, windows-arm64]", 2, false},
+		{"empty", "platforms: []", 0, false},
+		{"legacy", "platform: linux-amd64", 0, false},
+		{"duplicate", "platforms: [linux-amd64, linux-amd64]", 0, true},
+		{"invalid", "platforms: [linux/amd64]", 0, true},
+		{"empty entry", "platforms: [\"\"]", 0, true},
+		{"scalar", "platforms: linux-amd64", 0, true},
+		{"ambiguous", "platform: linux-amd64\n  platforms: [windows-amd64]", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Parse([]byte("version: 1\nbuild:\n  " + tc.fields + "\ntargets: {}\n"))
+			if (err != nil) != tc.invalid {
+				t.Fatalf("Parse error = %v, invalid = %v", err, tc.invalid)
+			}
+			if err == nil && len(c.Build.Platforms) != tc.want {
+				t.Fatalf("platforms = %v", c.Build.Platforms)
+			}
+		})
+	}
+}
+
+func TestConfigPathCompatibility(t *testing.T) {
+	root := t.TempDir()
+	if got := Path(root, ""); got != filepath.Join(root, Filename) {
+		t.Fatal(got)
+	}
+	for _, name := range []string{LegacyFilename, Filename} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("version: 1\ntargets: {}\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if got := Path(root, ""); got != filepath.Join(root, name) {
+			t.Fatal(got)
+		}
+	}
+	if got := Path(root, LegacyFilename); got != filepath.Join(root, LegacyFilename) {
+		t.Fatal(got)
+	}
+	if got := Path(root, "other.yaml"); got != filepath.Join(root, "other.yaml") {
+		t.Fatal(got)
+	}
+}
+
+func TestContainerUserInheritance(t *testing.T) {
+	data := strings.Replace(valid, "binary_name: service", "container_user: ssh\n  binary_name: service", 1)
+	data = strings.Replace(data, "host: second", "host: second\n    container_user: image", 1)
+	c, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Targets["one"].ContainerUser != "ssh" || c.Targets["two"].ContainerUser != "image" {
+		t.Fatal(c.Targets)
 	}
 }

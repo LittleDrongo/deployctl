@@ -207,7 +207,7 @@ func Run(ctx context.Context, o Options, out io.Writer) error {
 			return closeErr
 		}
 	}
-	_, err = fmt.Fprintln(out, "Инициализация завершена. Для метаданных используйте в приложении:\n  info := buildcard.Snapshot()\nИмпорт: github.com/LittleDrongo/buildcard. Snapshot() ничего не печатает; используйте info в логике приложения.\nЗаполните targets и проверьте план: deployctl up <target> --dry-run.")
+	_, err = fmt.Fprintln(out, "Инициализация завершена. Для метаданных используйте в приложении:\n  info := buildcard.Snapshot()\nИмпорт: github.com/LittleDrongo/buildcard. Snapshot() ничего не печатает; используйте info в логике приложения.\nЗаполните targets и проверьте план: deployctl up <target> --dry-run.\nДля автодополнения Bash: deployctl completion install bash.")
 	return err
 }
 
@@ -228,11 +228,22 @@ func template(module string) string {
 	if name == "" {
 		name = "app"
 	}
-	return fmt.Sprintf(`# deployctl config schema. Local paths are relative to the Go module root.
+	return fmt.Sprintf(`# Install: go install github.com/LittleDrongo/deployctl@latest
+# deployctl config schema. Local paths are relative to the Go module root.
 version: 1
 build:
   package: .
-  # platform: windows-amd64 # omitted: platform of the local machine
+  # Comment out or remove platforms you do not need.
+  platforms:
+    - windows-amd64
+    - windows-arm64
+    - linux-amd64
+    - linux-arm64
+    - android-arm64
+    - windows-386
+    - linux-386
+    - darwin-amd64
+    - darwin-arm64
 
 defaults:
   build_target: linux-amd64
@@ -241,6 +252,8 @@ defaults:
   docker_container: %[1]s
   docker_image: %[1]s:latest
   docker_base_image: alpine:3.20
+  # Run as the SSH user so application files remain editable on the host.
+  container_user: ssh
   docker_run_args: []
   docker_mounts:
     - host_path: /opt/%[1]s

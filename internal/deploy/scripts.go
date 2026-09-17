@@ -98,7 +98,13 @@ func runtimeScript(t target) string {
 // and mounts first. Starting separately lets rollback retain the original name.
 func createContainer(t target, name, release, hash string) string {
 	var b strings.Builder
+	if useSSHUser(t) {
+		b.WriteString("deploy_uid=$(id -u)\ndeploy_gid=$(id -g)\n")
+	}
 	fmt.Fprintf(&b, "docker create %s", words(t.RunArgs...))
+	if useSSHUser(t) {
+		b.WriteString(` --user "$deploy_uid:$deploy_gid"`)
+	}
 	for _, m := range t.Mounts {
 		fmt.Fprintf(&b, " --mount %s%s%s", quote("type=bind,src="), remotePath(m.HostPath), quote(",dst="+m.ContainerPath))
 	}
@@ -213,4 +219,17 @@ fi
 if ! rm -f -- "$backup"; then echo 'remote : Новый сервис работает; резервный бинарник не удалён' >&2; fi
 ` + "(\n" + cleanupImages(t) + "\n) || echo 'remote : Сервис работает; очистка образов не завершена' >&2\n"
 	return s
+}
+
+// Explicit Docker arguments take precedence over the default SSH identity.
+func useSSHUser(t target) bool {
+	if t.ContainerUser == "image" {
+		return false
+	}
+	for _, arg := range t.RunArgs {
+		if arg == "--user" || arg == "-u" || strings.HasPrefix(arg, "--user=") || strings.HasPrefix(arg, "-u=") {
+			return false
+		}
+	}
+	return true
 }

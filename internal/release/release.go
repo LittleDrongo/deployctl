@@ -137,7 +137,8 @@ type Options struct {
 }
 
 // Run validates one immutable HEAD, creates its next release tag and pushes
-// only that tag to origin. A failed push deliberately leaves the local tag.
+// only that tag when origin exists. A failed push deliberately leaves the local
+// tag; repositories without origin can create local releases successfully.
 func Run(parent context.Context, options Options, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(parent, releaseLimit)
 	defer cancel()
@@ -152,9 +153,6 @@ func Run(parent context.Context, options Options, out io.Writer) error {
 	}
 	if status != "" {
 		return fmt.Errorf("release requires a clean working tree; commit or stash changes first")
-	}
-	if _, err := run(ctx, "remote", "get-url", "--push", "origin"); err != nil {
-		return fmt.Errorf("release requires remote origin for pushing the tag: %w", err)
 	}
 	current, err := run(ctx, "tag", "--points-at", head)
 	if err != nil {
@@ -171,6 +169,17 @@ func Run(parent context.Context, options Options, out io.Writer) error {
 	}
 	nextTag := next(previous)
 	if options.DryRun {
+		present, err := hasOrigin(ctx, run)
+		if err != nil {
+			return err
+		}
+		publication := "origin отсутствует: тег останется локальным"
+		if present {
+			publication = "тег будет отправлен в origin"
+		}
+		if _, err := fmt.Fprintln(out, "Публикация:", publication); err != nil {
+			return err
+		}
 		if previous == "" {
 			previous = "не найден"
 		}
@@ -184,10 +193,32 @@ func Run(parent context.Context, options Options, out io.Writer) error {
 	if _, err := fmt.Fprintf(out, "Создан локальный тег %s → %s\n", nextTag, head); err != nil {
 		return err
 	}
+	present, err := hasOrigin(ctx, run)
+	if err != nil {
+		return fmt.Errorf("local tag %s preserved; %w", nextTag, err)
+	}
+	if !present {
+		_, err := fmt.Fprintf(out, "origin отсутствует; тег %s сохранён локально, отправка пропущена.\n", nextTag)
+		return err
+	}
 	ref := "refs/tags/" + nextTag
 	if _, err := run(ctx, "push", "--no-follow-tags", "origin", ref+":"+ref); err != nil {
 		return fmt.Errorf("push tag %s to origin failed: %w; local tag preserved; retry: git push --no-follow-tags origin %s:%s", nextTag, err, ref, ref)
 	}
 	_, err = fmt.Fprintf(out, "Тег %s опубликован в origin\n", nextTag)
 	return err
+}
+
+// Distinguish an absent origin from an error reading Git configuration.
+func hasOrigin(ctx context.Context, run gitRunner) (bool, error) {
+	remotes, err := run(ctx, "remote")
+	if err != nil {
+		return false, fmt.Errorf("read Git remotes: %w", err)
+	}
+	for _, remote := range strings.Fields(remotes) {
+		if remote == "origin" {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/LittleDrongo/deployctl/internal/build"
 	"github.com/LittleDrongo/deployctl/internal/clean"
+	"github.com/LittleDrongo/deployctl/internal/completion"
 	"github.com/LittleDrongo/deployctl/internal/config"
 	"github.com/LittleDrongo/deployctl/internal/gitmeta"
 	"github.com/LittleDrongo/deployctl/internal/project"
@@ -30,16 +31,17 @@ func writeHelp(out io.Writer) error {
 		{"info [--root DIR] [--json]", "Версия приложения из Git"},
 		{"build [options]", "Собрать приложение"},
 		{"init [options]", "Подготовить существующий модуль"},
-		{"config check [options]", "Проверить deploy.yaml"},
+		{"config check [options]", "Проверить service.yaml"},
 		{"doctor <target> [options]", "Проверить окружение сервера"},
-		{"status <target> [options]", "Показать состояние контейнера"},
+		{"status [target] [options]", "Показать состояние одного или всех контейнеров"},
 		{"logs <target> [options]", "Показать логи контейнера"},
 		{"up <target> [options]", "Собрать и развернуть"},
 		{"stop <target> [options]", "Остановить контейнер"},
 		{"restart <target> [options]", "Перезапустить существующий"},
 		{"remove <target> [options]", "Остановить и удалить контейнер"},
-		{"release [options]", "Создать и отправить релизный тег"},
+		{"release [options]", "Создать тег; отправить при наличии origin"},
 		{"clean [options]", "Удалить локальные артефакты"},
+		{"completion bash|install bash", "Автодополнение команд, флагов и targets"},
 		{"help", "Справка"},
 	}
 	for _, command := range commands {
@@ -56,6 +58,10 @@ func Run(ctx context.Context, args []string, out io.Writer, version string) erro
 		return writeHelp(out)
 	}
 	switch args[0] {
+	case "completion":
+		return completion.Run(args[1:], out)
+	case "__complete":
+		return completion.Complete(args[1:], out)
 	case "help", "--help", "-h":
 		if len(args) != 1 {
 			return fmt.Errorf("help does not accept arguments")
@@ -143,9 +149,9 @@ func runBuild(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("build", flag.ContinueOnError)
 	flags.SetOutput(out)
 	var o build.Options
-	filename := flags.String("config", "", "config path relative to module root (default deploy.yaml)")
+	filename := flags.String("config", "", "config path relative to module root (default service.yaml; fallback deploy.yaml)")
 	flags.StringVar(&o.Root, "root", "", "application module directory")
-	flags.StringVar(&o.Platform, "platform", runtime.GOOS+"-"+runtime.GOARCH, "target OS-ARCH, e.g. linux-amd64")
+	flags.StringVar(&o.Platform, "platform", runtime.GOOS+"-"+runtime.GOARCH, "build only this OS-ARCH, overriding configured platforms")
 	flags.StringVar(&o.Package, "package", ".", "main package relative to module root")
 	flags.StringVar(&o.Tag, "tag", "", "local Git tag to build in a temporary checkout")
 	flags.BoolVar(&o.DryRun, "dry-run", false, "print plan without building or changing Git/files")
@@ -167,6 +173,7 @@ func runBuild(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	platforms := []string{o.Platform}
 	c, err := config.Load(config.Path(o.Root, *filename))
 	if err != nil && (*filename != "" || !os.IsNotExist(err)) {
 		return err
@@ -177,12 +184,29 @@ func runBuild(ctx context.Context, args []string, out io.Writer) error {
 		if !set["package"] {
 			o.Package = c.Build.Package
 		}
-		if !set["platform"] && c.Build.Platform != "" {
-			o.Platform = c.Build.Platform
+		if !set["platform"] {
+			if len(c.Build.Platforms) > 0 {
+				platforms = c.Build.Platforms
+			} else if c.Build.Platform != "" {
+				platforms = []string{c.Build.Platform}
+			}
 		}
 	}
-	_, err = build.Run(ctx, o, out)
-	return err
+	var failures []error
+	for _, platform := range platforms {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(failures, err)...)
+		}
+		o.Platform = platform
+		if _, err := build.Run(ctx, o, out); err != nil {
+			failure := fmt.Errorf("%s: %w", platform, err)
+			failures = append(failures, failure)
+			if _, writeErr := fmt.Fprintf(out, "Ошибка сборки %s\n", failure); writeErr != nil {
+				return errors.Join(append(failures, writeErr)...)
+			}
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func runInit(ctx context.Context, args []string, out io.Writer) error {
