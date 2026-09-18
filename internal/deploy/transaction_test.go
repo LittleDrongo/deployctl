@@ -47,7 +47,9 @@ docker() {
    *State.Status*) echo 'exited exit=1 error= oom=false restarts=3' ;;
    *AutoRemove*) echo false ;;
    *deployctl.release*) echo "$RELEASE" ;;
-   *deployctl.runtime*) [ "$FAIL" = legacy-runtime ] || echo ssh-home-container-v2 ;;
+   *deployctl.runtime*)
+    if [ "$FAIL" = ssh-runtime ]; then echo ssh-home-container-v2;
+    elif [ "$FAIL" != legacy-runtime ]; then echo image-container-v2; fi ;;
    *deployctl.binary*) echo "$OLD_HASH" ;;
    *State.Health*)
     if [ "$kind" = old ]; then echo "true false $OLD_HEALTH";
@@ -115,6 +117,7 @@ func TestDeploymentTransaction(t *testing.T) {
 		{"already running", "", "same", "none", true, false, false},
 		{"already healthy", "", "same", "healthy", true, false, false},
 		{"upgrade runtime for same release", "legacy-runtime", "same", "healthy", true, false, true},
+		{"switch SSH user to image for same release", "ssh-runtime", "same", "healthy", true, false, true},
 		{"create error", "create", "previous", "none", true, true, false},
 		{"build error", "build", "previous", "none", true, true, false},
 		{"start rollback", "start", "previous", "none", true, true, false},

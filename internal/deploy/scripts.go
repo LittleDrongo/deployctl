@@ -254,9 +254,9 @@ if ! rm -f -- "$backup"; then echo 'remote : Новый сервис работ�
 	return s
 }
 
-// Explicit Docker arguments take precedence over the default SSH identity.
+// The image identity is the default; SSH identity is explicitly opt-in.
 func useSSHUser(t target) bool {
-	if t.ContainerUser == "image" {
+	if t.ContainerUser != "ssh" {
 		return false
 	}
 	for _, arg := range t.RunArgs {

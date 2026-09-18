@@ -203,7 +203,7 @@ func TestContainerUserSelection(t *testing.T) {
 		args         []string
 		want         string
 	}{
-		{"default", "", nil, "--user 1234:5678"},
+		{"default", "", nil, ""},
 		{"ssh", "ssh", nil, "--user 1234:5678"},
 		{"image", "image", nil, ""},
 		{"explicit", "", []string{"--user", "42:43"}, "--user 42:43"},
@@ -247,7 +247,8 @@ func TestRuntimeHomeDefaults(t *testing.T) {
 		args                []string
 		wantHome            string
 	}{
-		{"default", "", "/app", nil, `ENV HOME="/app"`},
+		{"default", "", "/app", nil, ""},
+		{"ssh", "ssh", "/app", nil, `ENV HOME="/app"`},
 		{"custom mount", "ssh", "/srv/my app", nil, `ENV HOME="/srv/my app"`},
 		{"literal path", "ssh", `/srv/$name"quoted`, nil, `ENV HOME="/srv/\$name\"quoted"`},
 		{"image user", "image", "/app", nil, ""},

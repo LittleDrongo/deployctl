@@ -252,10 +252,9 @@ defaults:
   docker_container: %[1]s
   docker_image: %[1]s:latest
   docker_base_image: alpine:3.20
-  # Run as the SSH user so application files remain editable on the host.
-  container_user: ssh
-  # HOME and XDG directories default to the mounted application directory.
-  # Override them with --env or --env-file in docker_run_args if needed.
+  # Use the base image user (root in alpine). Host files may require sudo.
+  # Set ssh to use the SSH user's UID/GID and application HOME/XDG directories.
+  container_user: image
   docker_run_args: []
   docker_mounts:
     - host_path: /opt/%[1]s

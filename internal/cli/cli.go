@@ -22,8 +22,8 @@ import (
 	"github.com/LittleDrongo/deployctl/internal/setup"
 )
 
-func writeHelp(out io.Writer) error {
-	if _, err := fmt.Fprintln(out, "deployctl — сборка и развёртывание Go-приложений\n\nДоступные команды:"); err != nil {
+func writeHelp(out io.Writer, version string) error {
+	if _, err := fmt.Fprintf(out, "deployctl — сборка и развёртывание Go-приложений\nВерсия утилиты: %s\n\nДоступные команды:\n", version); err != nil {
 		return err
 	}
 	commands := [][2]string{
@@ -55,7 +55,7 @@ func writeHelp(out io.Writer) error {
 
 func Run(ctx context.Context, args []string, out io.Writer, version string) error {
 	if len(args) == 0 {
-		return writeHelp(out)
+		return writeHelp(out, version)
 	}
 	switch args[0] {
 	case "completion":
@@ -66,7 +66,7 @@ func Run(ctx context.Context, args []string, out io.Writer, version string) erro
 		if len(args) != 1 {
 			return fmt.Errorf("help does not accept arguments")
 		}
-		return writeHelp(out)
+		return writeHelp(out, version)
 	case "version", "--version":
 		if len(args) != 1 {
 			return fmt.Errorf("version does not accept arguments")
