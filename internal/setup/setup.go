@@ -18,7 +18,7 @@ import (
 )
 
 const Buildcard = "github.com/LittleDrongo/buildcard"
-const BuildcardVersion = "v1.0.1"
+const BuildcardVersion = "v1.0.2"
 
 type Options struct {
 	Root, Config               string

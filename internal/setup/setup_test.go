@@ -99,13 +99,13 @@ func localProxy(t *testing.T) {
 	root := t.TempDir()
 	base := "github.com/!little!drongo/buildcard/@v/"
 	mod := "module " + Buildcard + "\n\ngo 1.25.0\n"
-	put(t, root, base+"v1.0.1.mod", mod)
-	put(t, root, base+"v1.0.1.info", `{"Version":"v1.0.1","Time":"2026-01-01T00:00:00Z"}`)
-	put(t, root, base+"list", "v1.0.1\n")
+	put(t, root, base+"v1.0.2.mod", mod)
+	put(t, root, base+"v1.0.2.info", `{"Version":"v1.0.2","Time":"2026-01-01T00:00:00Z"}`)
+	put(t, root, base+"list", "v1.0.2\n")
 	var data bytes.Buffer
 	z := zip.NewWriter(&data)
 	for name, contents := range map[string]string{"go.mod": mod, "card.go": "package buildcard\ntype Info struct{}\nfunc Snapshot() Info { return Info{} }\n"} {
-		w, err := z.Create(Buildcard + "@v1.0.1/" + name)
+		w, err := z.Create(Buildcard + "@v1.0.2/" + name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,12 +116,14 @@ func localProxy(t *testing.T) {
 	if err := z.Close(); err != nil {
 		t.Fatal(err)
 	}
-	put(t, root, base+"v1.0.1.zip", data.String())
+	put(t, root, base+"v1.0.2.zip", data.String())
 	proxyPath := filepath.ToSlash(root)
 	if !strings.HasPrefix(proxyPath, "/") {
 		proxyPath = "/" + proxyPath
 	}
 	t.Setenv("GOPROXY", (&url.URL{Scheme: "file", Path: proxyPath}).String())
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "none")
 	t.Setenv("GOSUMDB", "off")
 	t.Setenv("GOMODCACHE", t.TempDir())
 }
@@ -137,7 +139,7 @@ func TestInitWithDependencyAndRetry(t *testing.T) {
 	if err := Run(context.Background(), Options{Root: dir, Scaffold: true}, &out); err != nil {
 		t.Fatal(err, out.String())
 	}
-	if !strings.Contains(read(t, dir, "go.mod"), Buildcard+" v1.0.1") {
+	if !strings.Contains(read(t, dir, "go.mod"), Buildcard+" v1.0.2") {
 		t.Fatal("dependency is not pinned")
 	}
 	if _, err := config.Load(filepath.Join(dir, config.Filename)); err != nil {
@@ -162,7 +164,7 @@ func TestInitWithDependencyAndRetry(t *testing.T) {
 
 func TestInitIncludesAllBuildPlatforms(t *testing.T) {
 	root := t.TempDir()
-	put(t, root, "go.mod", "module example.com/app\n\ngo 1.25.0\nrequire "+Buildcard+" v1.0.1\n")
+	put(t, root, "go.mod", "module example.com/app\n\ngo 1.25.0\nrequire "+Buildcard+" v1.0.2\n")
 	t.Setenv("GOPROXY", "off")
 	var out bytes.Buffer
 	if err := Run(context.Background(), Options{Root: root}, &out); err != nil {
@@ -182,7 +184,7 @@ func TestInitConfigNameAndInstallHeader(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "new", true: "legacy"}[legacy], func(t *testing.T) {
 			root := t.TempDir()
-			put(t, root, "go.mod", "module example.com/app\n\ngo 1.25.0\nrequire "+Buildcard+" v1.0.1\n")
+			put(t, root, "go.mod", "module example.com/app\n\ngo 1.25.0\nrequire "+Buildcard+" v1.0.2\n")
 			t.Setenv("GOPROXY", "off")
 			old := "version: 1\nbuild:\n  platform: linux-arm64\ntargets: {}\n"
 			if legacy {
