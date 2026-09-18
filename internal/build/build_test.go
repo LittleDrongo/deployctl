@@ -133,6 +133,8 @@ func TestTagBuildPreservesWorktree(t *testing.T) {
 		return strings.TrimSpace(string(data))
 	}
 	gitCommand("init")
+	origin := "git@gitlab.services.mts.ru:clr_group_msk/email_invoice_stamp_cleaner.git"
+	gitCommand("remote", "add", "origin", origin)
 	gitCommand("config", "user.name", "Test")
 	gitCommand("config", "user.email", "test@example.com")
 	gitCommand("add", ".")
@@ -151,11 +153,31 @@ func TestTagBuildPreservesWorktree(t *testing.T) {
 	}
 	result := run(t, root, "v1.2.3")
 	got := values(t, result.Artifact)
-	if got[0] != "v1.2.3" || got[1] != commit || got[4] != "false" {
+	if got[0] != "v1.2.3" || got[1] != commit || got[4] != "false" || got[6] != origin {
 		t.Fatalf("tag metadata: %v", got)
 	}
 	if gitCommand("status", "--porcelain") != status || gitCommand("rev-parse", "HEAD") != commit || gitCommand("worktree", "list", "--porcelain") != worktrees {
 		t.Fatal("tag build changed caller Git state")
+	}
+}
+
+func TestRepositoryURL(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+	git("init")
+	got, err := repositoryURL(context.Background(), root, "module")
+	if err != nil || got != "module" {
+		t.Fatalf("fallback: %q %v", got, err)
+	}
+	git("config", "remote.origin.url", "https://user:secret@example.com/team/repo.git?token=secret#secret")
+	got, err = repositoryURL(context.Background(), root, "module")
+	if err != nil || got != "https://example.com/team/repo.git" {
+		t.Fatalf("URL: %q %v", got, err)
 	}
 }
 

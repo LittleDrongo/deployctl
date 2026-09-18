@@ -47,6 +47,7 @@ docker() {
    *State.Status*) echo 'exited exit=1 error= oom=false restarts=3' ;;
    *AutoRemove*) echo false ;;
    *deployctl.release*) echo "$RELEASE" ;;
+   *deployctl.runtime*) [ "$FAIL" = legacy-runtime ] || echo ssh-home-container-v2 ;;
    *deployctl.binary*) echo "$OLD_HASH" ;;
    *State.Health*)
     if [ "$kind" = old ]; then echo "true false $OLD_HEALTH";
@@ -113,6 +114,7 @@ func TestDeploymentTransaction(t *testing.T) {
 		{"first deployment", "", "previous", "none", false, false, true},
 		{"already running", "", "same", "none", true, false, false},
 		{"already healthy", "", "same", "healthy", true, false, false},
+		{"upgrade runtime for same release", "legacy-runtime", "same", "healthy", true, false, true},
 		{"create error", "create", "previous", "none", true, true, false},
 		{"build error", "build", "previous", "none", true, true, false},
 		{"start rollback", "start", "previous", "none", true, true, false},
@@ -172,7 +174,7 @@ func TestDeploymentTransaction(t *testing.T) {
 					t.Fatal("failed initial deployment left active files")
 				}
 			}
-			if tc.release == "same" {
+			if tc.release == "same" && !tc.wantNew {
 				if !strings.Contains(string(out), "deployctl restart prod") {
 					t.Fatalf("missing restart hint: %s", out)
 				}

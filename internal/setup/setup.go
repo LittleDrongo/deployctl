@@ -18,7 +18,7 @@ import (
 )
 
 const Buildcard = "github.com/LittleDrongo/buildcard"
-const BuildcardVersion = "v1.0.0"
+const BuildcardVersion = "v1.0.1"
 
 type Options struct {
 	Root, Config               string
@@ -254,6 +254,8 @@ defaults:
   docker_base_image: alpine:3.20
   # Run as the SSH user so application files remain editable on the host.
   container_user: ssh
+  # HOME and XDG directories default to the mounted application directory.
+  # Override them with --env or --env-file in docker_run_args if needed.
   docker_run_args: []
   docker_mounts:
     - host_path: /opt/%[1]s

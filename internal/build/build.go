@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -139,6 +140,13 @@ func Run(ctx context.Context, o Options, out io.Writer) (result Result, err erro
 		}
 	}
 	name := path.Base(module)
+	repository := module
+	if metadata.HasGit {
+		repository, err = repositoryURL(ctx, o.Root, module)
+		if err != nil {
+			return result, err
+		}
+	}
 	if majorSuffix.MatchString(name) {
 		name = path.Base(path.Dir(module))
 	}
@@ -214,7 +222,7 @@ func Run(ctx context.Context, o Options, out io.Writer) (result Result, err erro
 		}
 	}
 	builtAt := time.Now().UTC()
-	flags, err := linkerFlags(targets, metadata, module, builtAt)
+	flags, err := linkerFlags(targets, metadata, repository, builtAt)
 	if err != nil {
 		return result, err
 	}
@@ -257,7 +265,7 @@ func Run(ctx context.Context, o Options, out io.Writer) (result Result, err erro
 		Schema: manifestSchema, Artifact: filepath.Base(result.Artifact), SHA256: hash,
 		Version: result.Version, ImageVersion: result.ImageVersion,
 		Commit: metadata.Commit, CommitShort: metadata.Short, CommitDate: metadata.CommitDate, Dirty: metadata.Dirty,
-		Repository: module, Platform: o.Platform, Package: o.Package, GoVersion: strings.TrimSpace(string(goVersionData)),
+		Repository: repository, Platform: o.Platform, Package: o.Package, GoVersion: strings.TrimSpace(string(goVersionData)),
 		DeployctlVersion: toolVersion, BuiltAt: builtAt.Format(time.RFC3339),
 	}
 	if err = os.Rename(tempPath, result.Artifact); err != nil {
@@ -269,6 +277,33 @@ func Run(ctx context.Context, o Options, out io.Writer) (result Result, err erro
 	}
 	_, err = fmt.Fprintf(out, "Готово: %s\nМанифест: %s\nSHA-256: %s\n", result.Artifact, result.Manifest, hash)
 	return result, err
+}
+
+func repositoryURL(ctx context.Context, root, fallback string) (string, error) {
+	data, err := command(ctx, root, nil, "git", "config", "--local", "--get", "remote.origin.url").Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return fallback, nil
+		}
+		return "", fmt.Errorf("read origin repository: %w", err)
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return fallback, nil
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return "", fmt.Errorf("origin repository contains control characters")
+	}
+	if strings.Contains(value, "://") {
+		u, err := url.Parse(value)
+		if err != nil {
+			return "", fmt.Errorf("invalid origin repository URL")
+		}
+		u.User, u.RawQuery, u.Fragment, u.ForceQuery = nil, "", "", false
+		value = u.String()
+	}
+	return value, nil
 }
 
 func linkerFlags(targets []string, metadata gitmeta.Info, repository string, now time.Time) (string, error) {

@@ -90,25 +90,57 @@ func runtimeScript(t target) string {
 	}
 	b.WriteString("phase=image\n" + progress("Подготовка образа "+t.Image))
 	// WORKDIR consumes the rest of the line; paths cannot contain newlines.
-	fmt.Fprintf(&b, "if ! docker build --label %s -t %s - > /dev/null <<'DEPLOY_DOCKERFILE'\nFROM %s\nWORKDIR %s\nDEPLOY_DOCKERFILE\nthen\n%s exit 1\nfi\n", quote("deployctl.repository="+imageRepository(t.Image)), quote(t.Image), t.Base, path.Dir(t.executable()), baseImageHelp(t.Base))
+	fmt.Fprintf(&b, "if ! docker build --label %s -t %s - > /dev/null <<'DEPLOY_DOCKERFILE'\nFROM %s\nWORKDIR %s\n%sDEPLOY_DOCKERFILE\nthen\n%s exit 1\nfi\n", quote("deployctl.repository="+imageRepository(t.Image)), quote(t.Image), t.Base, path.Dir(t.executable()), runtimeEnvironment(t), baseImageHelp(t.Base))
 	return b.String()
+}
+
+// A numeric SSH identity need not have a home directory in the base image.
+// Image defaults allow both --env and --env-file to override these paths.
+func runtimeEnvironment(t target) string {
+	if !useSSHUser(t) {
+		return ""
+	}
+	home := path.Dir(t.executable())
+	var b strings.Builder
+	for _, env := range []struct{ key, value string }{
+		{"HOME", home},
+		{"XDG_CONFIG_HOME", path.Join(home, ".config")},
+		{"XDG_CACHE_HOME", path.Join(home, ".cache")},
+		{"XDG_DATA_HOME", path.Join(home, ".local/share")},
+		{"XDG_STATE_HOME", path.Join(home, ".local/state")},
+	} {
+		// Dockerfile ENV has its own quoting and variable expansion rules.
+		value := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`).Replace(env.value)
+		fmt.Fprintf(&b, "ENV %s=\"%s\"\n", env.key, value)
+	}
+	return b.String()
+}
+
+func runtimePolicy(t target) string {
+	if useSSHUser(t) {
+		return "ssh-home-container-v2"
+	}
+	return "image-container-v2"
 }
 
 // Create before touching the old container: Docker validates its configuration
 // and mounts first. Starting separately lets rollback retain the original name.
 func createContainer(t target, name, release, hash string) string {
 	var b strings.Builder
+	b.WriteString("deploy_container_host=$(docker info --format '{{.Name}}' 2>/dev/null || true)\ndeploy_container_user=$(id -un 2>/dev/null || true)\n")
 	if useSSHUser(t) {
 		b.WriteString("deploy_uid=$(id -u)\ndeploy_gid=$(id -g)\n")
 	}
 	fmt.Fprintf(&b, "docker create %s", words(t.RunArgs...))
+	b.WriteString(` --env BUILDCARD_CONTAINER=true --env "BUILDCARD_CONTAINER_HOST=$deploy_container_host" --env "BUILDCARD_CONTAINER_USER=$deploy_container_user"`)
+	fmt.Fprintf(&b, " --env %s --env %s", quote("BUILDCARD_CONTAINER_NAME="+t.Container), quote("BUILDCARD_CONTAINER_IMAGE="+t.Image))
 	if useSSHUser(t) {
 		b.WriteString(` --user "$deploy_uid:$deploy_gid"`)
 	}
 	for _, m := range t.Mounts {
 		fmt.Fprintf(&b, " --mount %s%s%s", quote("type=bind,src="), remotePath(m.HostPath), quote(",dst="+m.ContainerPath))
 	}
-	fmt.Fprintf(&b, " --name %s --label %s --label %s --entrypoint %s %s", quote(name), quote("deployctl.release="+release), quote("deployctl.binary="+hash), quote(t.executable()), quote(t.Image))
+	fmt.Fprintf(&b, " --name %s --label %s --label %s --label %s --entrypoint %s %s", quote(name), quote("deployctl.release="+release), quote("deployctl.binary="+hash), quote("deployctl.runtime="+runtimePolicy(t)), quote(t.executable()), quote(t.Image))
 	for _, a := range t.StartArgs {
 		fmt.Fprintf(&b, " %s", quote(a.Key+"="+a.Value))
 	}
@@ -130,6 +162,7 @@ func deployScript(t target, stage, hash, release string) string {
 	s := lockScript(t) + "phase=checksum\n" +
 		"test \"$(sha256sum " + staged + " | cut -d ' ' -f 1)\" = " + quote(hash) + "\n" +
 		"if [ -f " + binary + " ] && [ \"$(docker inspect --format '{{index .Config.Labels \"deployctl.release\"}}' " + c + " 2>/dev/null || true)\" = " + quote(release) + " ] &&\n" +
+		"   [ \"$(docker inspect --format '{{index .Config.Labels \"deployctl.runtime\"}}' " + c + " 2>/dev/null || true)\" = " + quote(runtimePolicy(t)) + " ] &&\n" +
 		"   [ \"$(sha256sum " + binary + " | cut -d ' ' -f 1)\" = \"$(docker inspect --format '{{index .Config.Labels \"deployctl.binary\"}}' " + c + " 2>/dev/null || true)\" ]; then\n" +
 		" state=$(" + stateCommand(t) + ")\n case \"$state\" in 'true false none'|'true false healthy')\n" +
 		progress("Эта версия уже запущена. Если нужен перезапуск, выполните "+restart+".") + "exit 0 ;; esac\nfi\n" +

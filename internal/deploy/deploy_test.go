@@ -240,3 +240,85 @@ docker() { printf '%s ' "$@" > args; }
 		})
 	}
 }
+
+func TestRuntimeHomeDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name, policy, mount string
+		args                []string
+		wantHome            string
+	}{
+		{"default", "", "/app", nil, `ENV HOME="/app"`},
+		{"custom mount", "ssh", "/srv/my app", nil, `ENV HOME="/srv/my app"`},
+		{"literal path", "ssh", `/srv/$name"quoted`, nil, `ENV HOME="/srv/\$name\"quoted"`},
+		{"image user", "image", "/app", nil, ""},
+		{"explicit user", "ssh", "/app", []string{"--user", "42:43"}, ""},
+		{"explicit environment", "ssh", "/app", []string{"--env", "HOME=/custom", "--env-file", "/srv/env"}, `ENV HOME="/app"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := target{Target: config.Target{ContainerUser: tc.policy, RunArgs: tc.args, RemoteDir: "./service", Binary: "app", Image: "app:v1", Base: "alpine:3.20", Mounts: []config.Mount{{HostPath: "./service", ContainerPath: tc.mount, Create: "dir"}}}}
+			// Capture the Dockerfile after shell processing, including literal $ and quotes.
+			script := "set -eu\ndocker() { cat > Dockerfile; }\n" + runtimeScript(target)
+			cmd := exec.Command(testShell(t), "-c", script)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(data)
+			if tc.wantHome == "" {
+				if strings.Contains(got, "ENV ") {
+					t.Fatalf("changed image user's environment: %s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantHome+"\n") {
+				t.Fatalf("missing %s in %s", tc.wantHome, got)
+			}
+			if tc.mount == "/app" {
+				for key, value := range map[string]string{"XDG_CONFIG_HOME": "/app/.config", "XDG_CACHE_HOME": "/app/.cache", "XDG_DATA_HOME": "/app/.local/share", "XDG_STATE_HOME": "/app/.local/state"} {
+					if !strings.Contains(got, fmt.Sprintf("ENV %s=\"%s\"\n", key, value)) {
+						t.Fatalf("missing %s in %s", key, got)
+					}
+				}
+			}
+			// Defaults belong to the image so Docker's --env-file can override them.
+			create := createContainer(target, "app", "release", "hash")
+			if strings.Contains(create, "HOME=/app") {
+				t.Fatalf("CLI defaults would override env-file: %s", create)
+			}
+			if tc.name == "explicit environment" && (!strings.Contains(create, "'HOME=/custom'") || !strings.Contains(create, "'--env-file' '/srv/env'")) {
+				t.Fatalf("lost environment overrides: %s", create)
+			}
+		})
+	}
+}
+
+func TestContainerMetadata(t *testing.T) {
+	dir := t.TempDir()
+	target := target{Target: config.Target{Container: "service", Image: "service:v2", ContainerUser: "image"}}
+	script := `set -eu
+id() { [ "$1" = -un ]; printf '%s\n' 'deployer user'; }
+docker() {
+ if [ "$1" = info ]; then printf '%s\n' 'engine host'; return; fi
+ printf '%s\n' "$@" > args
+}
+` + createContainer(target, "temporary-candidate", "release", "hash")
+	cmd := exec.Command(testShell(t), "-c", script)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"BUILDCARD_CONTAINER=true", "BUILDCARD_CONTAINER_HOST=engine host", "BUILDCARD_CONTAINER_USER=deployer user", "BUILDCARD_CONTAINER_NAME=service", "BUILDCARD_CONTAINER_IMAGE=service:v2"} {
+		if !strings.Contains(string(data), "--env\n"+want+"\n") {
+			t.Fatalf("missing argument %q in %s", want, data)
+		}
+	}
+}
