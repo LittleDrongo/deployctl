@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,8 +35,101 @@ func TestInfoAndToolVersion(t *testing.T) {
 	if got.Version != "dev" || got.Root != dir {
 		t.Fatalf("application metadata: %+v", got)
 	}
-	if err := Run(context.Background(), []string{"up"}, &out, "dev"); err == nil {
-		t.Fatal("up without a target succeeded")
+}
+
+func TestUpTargetSelection(t *testing.T) {
+	root := t.TempDir()
+	config := `version: 1
+build:
+  package: ./cmd/app
+defaults:
+  build_target: linux-amd64
+  remote_dir: /opt/app
+  binary_name: app
+  docker_container: app
+  docker_image: app:latest
+  docker_base_image: alpine:3.20
+  docker_mounts:
+    - host_path: /opt/app
+      container_path: /app
+targets:
+  prod:
+    host: production
+    build_target: linux-arm64
+  dev:
+    host: development
+`
+	for name, data := range map[string]string{"go.mod": "module example.com/app\n", "custom.yaml": config} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", "")
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"all", nil, []string{"dev", "prod"}},
+		{"explicit", []string{"prod"}, []string{"prod"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"up"}, tc.args...)
+			args = append(args, "--root", root, "--config", "custom.yaml", "--dry-run")
+			var out bytes.Buffer
+			if err := Run(context.Background(), args, &out, "dev"); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, line := range strings.Split(out.String(), "\n") {
+				if value, ok := strings.CutPrefix(line, "План up "); ok {
+					name, _, _ := strings.Cut(value, ":")
+					got = append(got, name)
+				}
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("targets = %v; want %v; output:\n%s", got, tc.want, out.String())
+			}
+			if strings.Count(out.String(), "Пакет: ./cmd/app") != len(tc.want) || !strings.Contains(out.String(), "Платформа: linux-arm64") {
+				t.Fatal(out.String())
+			}
+			if tc.name == "all" && !strings.Contains(out.String(), "Платформа: linux-amd64") {
+				t.Fatal(out.String())
+			}
+		})
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"missing"}, "unknown target"},
+		{[]string{"dev", "prod"}, "usage:"},
+		{[]string{"--timeout", "0s"}, "target dev:"},
+	} {
+		var out bytes.Buffer
+		args := append([]string{"up", "--root", root, "--config", "custom.yaml", "--dry-run"}, tc.args...)
+		err := Run(context.Background(), args, &out, "dev")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("args %v: error = %v; want %q", args, err, tc.want)
+		}
+		if tc.want == "target dev:" && !strings.Contains(err.Error(), "target prod:") {
+			t.Fatalf("remaining target was not attempted: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+	if err := Run(ctx, []string{"up", "--root", root, "--config", "custom.yaml", "--dry-run"}, &out, "dev"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled deployment: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".bin")); !os.IsNotExist(err) {
+		t.Fatal("dry-run wrote artifacts")
+	}
+	if err := os.WriteFile(filepath.Join(root, "custom.yaml"), []byte("version: 1\ntargets: {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(context.Background(), []string{"up", "--root", root, "--config", "custom.yaml", "--dry-run"}, &out, "dev"); err == nil || !strings.Contains(err.Error(), "no targets configured") {
+		t.Fatalf("empty targets: %v", err)
 	}
 }
 

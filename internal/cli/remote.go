@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,9 +47,10 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 		}
 		return err
 	}
-	if (action == "status" && f.NArg() > 1) || (action != "status" && f.NArg() != 1) {
-		if action == "status" {
-			return fmt.Errorf("usage: deployctl status [TARGET] [options]")
+	optionalTarget := action == "status" || action == "up"
+	if (optionalTarget && f.NArg() > 1) || (!optionalTarget && f.NArg() != 1) {
+		if optionalTarget {
+			return fmt.Errorf("usage: deployctl %s [TARGET] [options]", action)
 		}
 		return fmt.Errorf("usage: deployctl %s TARGET [options]", action)
 	}
@@ -65,6 +67,41 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 		return err
 	}
 	transport := deploy.OpenSSH{Out: out}
+	if action == "up" {
+		if pkg == "" {
+			pkg = c.Build.Package
+		}
+		names := []string{f.Arg(0)}
+		if f.NArg() == 0 {
+			names = make([]string, 0, len(c.Targets))
+			for name := range c.Targets {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+		}
+		if len(names) == 0 {
+			return fmt.Errorf("no targets configured")
+		}
+		var failures []error
+		for _, name := range names {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(append(failures, err)...)
+			}
+			t, ok := c.Targets[name]
+			if !ok {
+				return fmt.Errorf("unknown target %q; configure targets in %s", name, config.Path(dir, *filename))
+			}
+			o := build.Options{Root: dir, Platform: t.BuildTarget, Package: pkg, Tag: tag, DryRun: *dry, Timeout: timeout}
+			if err := upTarget(ctx, transport, t, name, o, keep, out); err != nil {
+				failure := fmt.Errorf("target %s: %w", name, err)
+				failures = append(failures, failure)
+				if _, writeErr := fmt.Fprintf(out, "Ошибка развёртывания %s\n", failure); writeErr != nil {
+					return errors.Join(append(failures, writeErr)...)
+				}
+			}
+		}
+		return errors.Join(failures...)
+	}
 	if action == "status" {
 		if f.NArg() == 0 {
 			return deploy.Statuses(ctx, transport, c.Targets, *dry, out)
@@ -90,13 +127,11 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 	if action == "logs" {
 		return deploy.Logs(ctx, transport, t, f.Arg(0), tail, follow, *dry, out)
 	}
-	if action != "up" {
-		return deploy.Manage(ctx, transport, t, action, *dry, out)
-	}
-	if pkg == "" {
-		pkg = c.Build.Package
-	}
-	result, err := build.Run(ctx, build.Options{Root: dir, Platform: t.BuildTarget, Package: pkg, Tag: tag, DryRun: *dry, Timeout: timeout}, out)
+	return deploy.Manage(ctx, transport, t, action, *dry, out)
+}
+
+func upTarget(ctx context.Context, transport deploy.Transport, t config.Target, name string, o build.Options, keep bool, out io.Writer) error {
+	result, err := build.Run(ctx, o, out)
 	if err != nil {
 		return err
 	}
@@ -104,10 +139,10 @@ func runRemote(ctx context.Context, action string, args []string, out io.Writer)
 	if err != nil {
 		return err
 	}
-	if err := deploy.Up(ctx, transport, t, f.Arg(0), result.Artifact, *dry, out); err != nil {
+	if err := deploy.Up(ctx, transport, t, name, result.Artifact, o.DryRun, out); err != nil {
 		return err
 	}
-	if !keep && !*dry {
+	if !keep && !o.DryRun {
 		if err := os.Remove(result.Artifact); err != nil {
 			fmt.Fprintf(out, "Сервис обновлён; не удалось удалить локальный бинарник: %v\n", err)
 		}

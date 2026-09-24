@@ -35,7 +35,7 @@ func writeHelp(out io.Writer, version string) error {
 		{"doctor <target> [options]", "Проверить окружение сервера"},
 		{"status [target] [options]", "Показать состояние одного или всех контейнеров"},
 		{"logs <target> [options]", "Показать логи контейнера"},
-		{"up <target> [options]", "Собрать и развернуть"},
+		{"up [target] [options]", "Собрать и развернуть на одном или всех targets"},
 		{"stop <target> [options]", "Остановить контейнер"},
 		{"restart <target> [options]", "Перезапустить существующий"},
 		{"remove <target> [options]", "Остановить и удалить контейнер"},
